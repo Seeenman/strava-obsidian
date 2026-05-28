@@ -1,12 +1,15 @@
-"""Fetch Strava run/bike activities for a given date and write them to a
-daily markdown log file.
+"""Fetch Strava run/bike/weight-training activities for a given date and
+write them to a daily markdown log file.
 
 Reads credentials from .env (STRAVA_CLIENT_ID, STRAVA_CLIENT_SECRET,
 STRAVA_REFRESH_TOKEN), refreshes the access token, fetches activities whose
-local start date matches the target date, filters to runs and bicycle rides,
-and writes the per-activity stats into a log file named
-`log-<year>-<month>-<day>-<dayofweek>.md` in the chosen directory. If the
-file does not yet exist it is created from `log-template.md`.
+local start date matches the target date, filters to runs, bicycle rides,
+and weight-training sessions, and writes the per-activity stats into a log
+file named `log-<year>-<month>-<day>-<dayofweek>.md` in the chosen
+directory. If the file does not yet exist it is created empty; only blocks
+for activity types that actually occurred are added. If the file already
+exists, any `[time of day]` placeholders are filled and extra activities
+are appended.
 
 Usage:
     python get_activities.py                                 # today, current dir
@@ -19,7 +22,6 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import os
-import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -34,7 +36,25 @@ METERS_PER_MILE = 1609.344
 METERS_PER_FOOT = 0.3048
 
 PLACEHOLDER = "[time of day]"
-TEMPLATE_FILENAME = "log-template.md"
+
+# Block templates used when appending a fresh block for an activity. The
+# first line is the heading; the rest is the body. Strength has no body —
+# weight-training activities only record the time of day.
+RUN_TEMPLATE: list[str] = [
+    "# Run [time of day]\n",
+    "- 📏 mi, ⏱️, ⛰️ ft, ↔️❤️ bpm, ⬆️❤️ bpm\n",
+    "\t- Description\n",
+    "\t- Fuel: \n",
+]
+BIKE_TEMPLATE: list[str] = [
+    "# Bike [time of day]\n",
+    "- 📏 mi, ⏱️, ⛰️ ft, ↔️❤️ bpm, ⬆️❤️ bpm\n",
+    "\t- Description\n",
+    "\t- Fuel: \n",
+]
+STRENGTH_TEMPLATE: list[str] = [
+    "# #Strength [time of day]\n",
+]
 
 
 def refresh_access_token(client_id: str, client_secret: str, refresh_token: str) -> str:
@@ -115,6 +135,10 @@ def is_bike(act: dict[str, Any]) -> bool:
     return "Ride" in s or "Bike" in s
 
 
+def is_strength(act: dict[str, Any]) -> bool:
+    return "WeightTraining" in sport(act)
+
+
 def format_duration(seconds: int | float | None) -> str:
     if seconds is None:
         return ""
@@ -145,12 +169,15 @@ def render_data_line(act: dict[str, Any]) -> str:
     )
 
 
-def ensure_log_file(log_path: Path, template_path: Path) -> None:
-    if log_path.exists():
-        return
-    if not template_path.exists():
-        raise FileNotFoundError(f"template not found: {template_path}")
-    shutil.copy(template_path, log_path)
+def ensure_log_file(log_path: Path) -> None:
+    """Create the log file if it doesn't already exist.
+
+    A fresh file starts empty — only blocks for activities that actually
+    occurred get added downstream. An existing file is left untouched so
+    its placeholders / prior content drive the fill-or-append pipeline.
+    """
+    if not log_path.exists():
+        log_path.touch()
 
 
 def parse_blocks(lines: list[str]) -> list[tuple[str, list[str]]]:
@@ -190,6 +217,10 @@ def is_bike_heading(heading: str) -> bool:
     return heading.startswith("# Bike")
 
 
+def is_strength_heading(heading: str) -> bool:
+    return heading.startswith("# #Strength")
+
+
 def fill_block(
     heading: str, body: list[str], act: dict[str, Any]
 ) -> tuple[str, list[str]]:
@@ -207,16 +238,6 @@ def fill_block(
     return new_heading, new_body
 
 
-def find_template_block(
-    blocks: list[tuple[str, list[str]]], type_check
-) -> tuple[str, list[str]] | None:
-    """Return a pristine copy of the first heading/body of the given type."""
-    for heading, body in blocks:
-        if type_check(heading):
-            return heading, list(body)
-    return None
-
-
 def existing_times(
     blocks: list[tuple[str, list[str]]], type_check
 ) -> set[str]:
@@ -225,10 +246,11 @@ def existing_times(
     for heading, _ in blocks:
         if not type_check(heading) or PLACEHOLDER in heading:
             continue
-        # Strip leading "# Run " or "# Bike " and trailing whitespace/newline.
-        rest = heading.split(" ", 2)
-        if len(rest) >= 3:
-            times.add(rest[2].strip())
+        # The time-of-day is the last whitespace-separated token in the heading
+        # ("# Run 10:22AM", "# Bike 3:04PM", "# #Strength 4:30PM").
+        token = heading.strip().rsplit(" ", 1)
+        if len(token) == 2:
+            times.add(token[1])
     return times
 
 
@@ -236,7 +258,7 @@ def fill_or_insert(
     blocks: list[tuple[str, list[str]]],
     activities: list[dict[str, Any]],
     type_check,
-    template_block: tuple[str, list[str]] | None,
+    template_lines: list[str],
 ) -> list[tuple[str, list[str]]]:
     if not activities:
         return blocks
@@ -260,17 +282,19 @@ def fill_or_insert(
             result[i] = fill_block(heading, body, pending[idx])
             idx += 1
 
-    # Pass 2: append fresh copies of the template block for any remainder.
-    if idx < len(pending) and template_block is not None:
-        # Insert after the last existing block of this type so order is
-        # preserved (Runs stay grouped, Bikes stay grouped).
+    # Pass 2: append fresh blocks built from the hardcoded template for any
+    # remaining activities. Insert after the last existing block of this
+    # type so blocks of the same type stay grouped; if none exist yet, fall
+    # back to appending at the end of the file.
+    if idx < len(pending):
         insert_at = len(result)
         for i, (heading, _) in enumerate(result):
             if type_check(heading):
                 insert_at = i + 1
         while idx < len(pending):
-            t_heading, t_body = template_block
-            result.insert(insert_at, fill_block(t_heading, list(t_body), pending[idx]))
+            t_heading = template_lines[0]
+            t_body = list(template_lines[1:])
+            result.insert(insert_at, fill_block(t_heading, t_body, pending[idx]))
             insert_at += 1
             idx += 1
 
@@ -288,10 +312,13 @@ def integrate_activities(
         [a for a in activities if is_bike(a)],
         key=lambda a: a.get("start_date_local", ""),
     )
-    run_template = find_template_block(blocks, is_run_heading)
-    bike_template = find_template_block(blocks, is_bike_heading)
-    blocks = fill_or_insert(blocks, runs, is_run_heading, run_template)
-    blocks = fill_or_insert(blocks, bikes, is_bike_heading, bike_template)
+    strengths = sorted(
+        [a for a in activities if is_strength(a)],
+        key=lambda a: a.get("start_date_local", ""),
+    )
+    blocks = fill_or_insert(blocks, runs, is_run_heading, RUN_TEMPLATE)
+    blocks = fill_or_insert(blocks, bikes, is_bike_heading, BIKE_TEMPLATE)
+    blocks = fill_or_insert(blocks, strengths, is_strength_heading, STRENGTH_TEMPLATE)
     return blocks
 
 
@@ -337,16 +364,18 @@ def main() -> int:
 
     access_token = refresh_access_token(client_id, client_secret, refresh_token)
     all_activities = fetch_activities_for_date(access_token, target_date)
-    activities = [a for a in all_activities if is_run(a) or is_bike(a)]
+    activities = [
+        a for a in all_activities
+        if is_run(a) or is_bike(a) or is_strength(a)
+    ]
 
     out_dir = Path(args.dir).expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     filename = f"log-{target_date.strftime('%Y-%m-%d')}-{target_date.strftime('%a')}.md"
     log_path = out_dir / filename
-    template_path = script_dir / TEMPLATE_FILENAME
 
-    ensure_log_file(log_path, template_path)
+    ensure_log_file(log_path)
 
     with open(log_path, encoding="utf-8") as f:
         lines = f.readlines()
@@ -359,8 +388,10 @@ def main() -> int:
 
     n_runs = sum(1 for a in activities if is_run(a))
     n_bikes = sum(1 for a in activities if is_bike(a))
+    n_strength = sum(1 for a in activities if is_strength(a))
     print(
-        f"Wrote {len(activities)} activities ({n_runs} run, {n_bikes} bike) "
+        f"Wrote {len(activities)} activities "
+        f"({n_runs} run, {n_bikes} bike, {n_strength} strength) "
         f"for {target_date} to {log_path}"
     )
     return 0
