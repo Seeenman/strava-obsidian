@@ -13,12 +13,16 @@ file named `log-<year>-<month>-<day>-<dayofweek>.md` (e.g.
 `log-2026-05-27-Wed.md`) in the chosen directory.
 
 Each run or bike activity becomes a block with distance (mi), moving time,
-elevation gain (ft), and average / max heart rate:
+elevation gain (ft), and average / max heart rate. If the activity has a
+description on Strava, the first line of the description is appended to the
+`- Description` bullet and each additional non-empty line becomes its own
+bullet at the same indent level:
 
 ```
 # Run 10:22AM
 - 📏8.21 mi, ⏱️56:13, ⛰️568 ft, ↔️❤️141 bpm, ⬆️❤️167 bpm
-	- Description
+	- Description: uphill trail tempo.
+	- 4x(3' on/3' off)
 	- Fuel: 
 ```
 
@@ -111,8 +115,12 @@ Wrote 3 activities (1 run, 1 bike, 1 strength) for 2026-05-27 to /…/log-2026-0
   `WeightTraining`. Run/bike matching uses `Run` / `Ride` / `Bike`
   substrings, so trail runs, virtual rides, e-bike rides, etc. all count.
 - Strava's rate limits are 200 requests / 15 min and 2000 / day. This tool
-  uses 1 + N requests per run (token refresh + paginated activities; for a
-  single day N is typically 1).
+  uses roughly `2 + N` requests per run: one token refresh, one paginated
+  call to list the day's activities, plus one extra call per run/bike
+  activity to fetch its description (Strava's list endpoint doesn't include
+  the description, only the per-activity detail endpoint does). Weight-
+  training activities don't need the detail call. Idempotent re-runs skip
+  activities already in the file, so they don't repeat the detail calls.
 - Heart-rate fields render as empty if the activity wasn't recorded with a
   heart-rate sensor.
 

@@ -33,6 +33,7 @@ from dotenv import load_dotenv
 
 TOKEN_URL = "https://www.strava.com/oauth/token"
 ACTIVITIES_URL = "https://www.strava.com/api/v3/athlete/activities"
+ACTIVITY_URL = "https://www.strava.com/api/v3/activities"  # single activity detail
 
 METERS_PER_MILE = 1609.344
 METERS_PER_FOOT = 0.3048
@@ -56,6 +57,11 @@ class ActivityKind:
 
     def matches_heading(self, heading: str) -> bool:
         return heading.startswith(self.heading_prefix)
+
+    @property
+    def has_description(self) -> bool:
+        """True if this kind's template has a `- Description` bullet to fill."""
+        return any("- Description" in line for line in self.template_lines)
 
 
 # Body shared by Run and Bike. Strength has no body — just a heading line.
@@ -152,6 +158,19 @@ def fetch_activities_for_date(
     return [a for a in activities if started_on_target_date(a)]
 
 
+def fetch_activity_detail(access_token: str, activity_id: int) -> dict[str, Any]:
+    """Fetch one activity's DetailedActivity. Needed for fields like
+    `description` that aren't included in the list endpoint's SummaryActivity.
+    """
+    resp = requests.get(
+        f"{ACTIVITY_URL}/{activity_id}",
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
 # --- Formatting -------------------------------------------------------------
 
 def format_duration(seconds: int | float | None) -> str:
@@ -217,15 +236,27 @@ def render_blocks(blocks: list[Block]) -> str:
 
 
 def fill_block(heading: str, body: list[str], act: dict[str, Any]) -> Block:
-    """Substitute the heading's `[time of day]` and the body's 📏 data line."""
-    time_str = format_time_of_day(act["start_date_local"])
-    new_heading = heading.replace(PLACEHOLDER, time_str)
-    new_body = list(body)
-    for i, line in enumerate(new_body):
+    """Fill `[time of day]`, the 📏 data line, and the Description bullet."""
+    new_heading = heading.replace(
+        PLACEHOLDER, format_time_of_day(act["start_date_local"])
+    )
+    description = (act.get("description") or "").strip()
+    new_body: list[str] = []
+    for line in body:
+        newline = "\n" if line.endswith("\n") else ""
         if "📏" in line:
-            newline = "\n" if line.endswith("\n") else ""
-            new_body[i] = render_data_line(act) + newline
-            break
+            new_body.append(render_data_line(act) + newline)
+        elif description and line.strip() == "- Description":
+            indent = line[: len(line) - len(line.lstrip())]
+            # Each non-empty line of the Strava description becomes its own
+            # bullet at the same indent level. The first line keeps the
+            # "Description:" label; subsequent lines become bare bullets.
+            desc_lines = [s.strip() for s in description.splitlines() if s.strip()]
+            new_body.append(f"{indent}- Description: {desc_lines[0]}" + newline)
+            for extra in desc_lines[1:]:
+                new_body.append(f"{indent}- {extra}" + newline)
+        else:
+            new_body.append(line)
     return new_heading, new_body
 
 
@@ -286,6 +317,28 @@ def fill_or_insert(
             insert_at += 1
 
     return result
+
+
+def enrich_with_description(
+    activities: list[dict[str, Any]],
+    blocks: list[Block],
+    access_token: str,
+) -> None:
+    """Mutate `activities` in place, attaching Strava's free-form `description`.
+
+    Description is only on the DetailedActivity schema, so each lookup costs
+    one extra API call. We skip:
+      - kinds whose template has no `- Description` bullet (Strength)
+      - activities already logged in `blocks` (idempotent re-runs cost nothing)
+    """
+    for act in activities:
+        kind = next((k for k in KINDS if k.matches_activity(act)), None)
+        if kind is None or not kind.has_description:
+            continue
+        if format_time_of_day(act["start_date_local"]) in existing_times(blocks, kind):
+            continue
+        detail = fetch_activity_detail(access_token, act["id"])
+        act["description"] = detail.get("description")
 
 
 def integrate_activities(
@@ -359,6 +412,9 @@ def main() -> int:
         lines = []
 
     blocks = parse_blocks(lines)
+    # Fetch DetailedActivity (for description) only for activities we're
+    # actually going to write — keeps idempotent re-runs free of extra calls.
+    enrich_with_description(activities, blocks, access_token)
     blocks = integrate_activities(blocks, activities)
 
     with open(log_path, "w", encoding="utf-8") as f:
