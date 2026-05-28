@@ -2,7 +2,8 @@
 # Wrapper that runs get_activities.py from the repo directory, activating
 # the local virtualenv if present. Arguments are forwarded verbatim.
 set -euo pipefail
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+# SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+SCRIPT_DIR="$HOME/repos/strava-obsidian"
 if [ -f "$SCRIPT_DIR/.venv/bin/activate" ]; then
     # shellcheck disable=SC1091
     source "$SCRIPT_DIR/.venv/bin/activate"
