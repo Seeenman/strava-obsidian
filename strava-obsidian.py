@@ -210,8 +210,14 @@ def parse_blocks(lines: list[str]) -> list[Block]:
     """Split lines into (heading, body) blocks at every `# ` heading.
 
     The first block always holds the preamble (lines before any heading) and
-    uses `""` as its heading.
+    uses `""` as its heading. The input's final line is normalized to end
+    with `\\n` so that blocks appended later start on a fresh line — without
+    this, an existing file whose last line wasn't newline-terminated would
+    cause the next heading to run on to the same line.
     """
+    if lines and not lines[-1].endswith("\n"):
+        lines = lines[:-1] + [lines[-1] + "\n"]
+
     blocks: list[Block] = []
     heading = ""
     body: list[str] = []
