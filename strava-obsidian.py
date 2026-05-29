@@ -68,7 +68,6 @@ class ActivityKind:
 _RUN_BIKE_BODY = (
     "- 📏 mi, ⏱️, ⛰️ ft, ↔️❤️ bpm, ⬆️❤️ bpm\n",
     "\t- Description\n",
-    "\t- Fuel: \n",
 )
 
 KINDS: tuple[ActivityKind, ...] = (
@@ -252,7 +251,7 @@ def fill_block(heading: str, body: list[str], act: dict[str, Any]) -> Block:
             # bullet at the same indent level. The first line keeps the
             # "Description:" label; subsequent lines become bare bullets.
             desc_lines = [s.strip() for s in description.splitlines() if s.strip()]
-            new_body.append(f"{indent}- Description: {desc_lines[0]}" + newline)
+            new_body.append(f"{indent}- {desc_lines[0]}" + newline)
             for extra in desc_lines[1:]:
                 new_body.append(f"{indent}- {extra}" + newline)
         else:

@@ -21,9 +21,8 @@ bullet at the same indent level:
 ```
 # Run 10:22AM
 - 📏8.21 mi, ⏱️56:13, ⛰️568 ft, ↔️❤️141 bpm, ⬆️❤️167 bpm
-	- Description: uphill trail tempo.
+	- uphill trail tempo.
 	- 4x(3' on/3' off)
-	- Fuel: 
 ```
 
 Each weight-training activity becomes a heading line with just the start time:
